@@ -1,0 +1,98 @@
+name: Build Storage Spoof
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - '**.cpp'
+      - '**.hpp'
+      - '**.mk'
+      - 'build.sh'
+      - 'template/**'
+      - 'storage_spoof_src.zip'
+      - '.github/workflows/build.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Compile Magisk Module
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android NDK
+        run: |
+          sdkmanager --install "ndk;27.2.12479018"
+
+          echo "$ANDROID_HOME/ndk/27.2.12479018" >> "$GITHUB_PATH"
+
+      - name: Extract Project
+        run: |
+          if [ -f storage_spoof_src.zip ]; then
+            mkdir -p source
+            unzip -q storage_spoof_src.zip -d source
+          else
+            mkdir -p source
+            cp -r build.sh module template source/
+          fi
+
+      - name: Fix Source Compatibility
+        working-directory: source
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path("module/jni/storage_spoof.cpp")
+          s = p.read_text()
+
+          old = "dl_iterate_phdr(scan_cb, nullptr, nullptr);"
+          new = "dl_iterate_phdr(scan_cb, nullptr);"
+
+          count = s.count(old)
+
+          if count:
+              s = s.replace(old, new)
+              p.write_text(s)
+
+          if old in s:
+              raise SystemExit("dl_iterate_phdr compatibility fix failed")
+
+          print(f"Fixed {count} incompatible calls.")
+          PY
+
+      - name: Build Magisk Module
+        working-directory: source
+        run: |
+          chmod +x build.sh
+          chmod +x template/META-INF/com/google/android/update-binary
+
+          ./build.sh
+
+      - name: Verify Build
+        working-directory: source
+        run: |
+          test -f storage_spoof.zip
+
+          unzip -l storage_spoof.zip
+
+          unzip -t storage_spoof.zip
+
+          echo "Build completed successfully!"
+
+      - name: Upload Magisk ZIP
+        uses: actions/upload-artifact@v4
+        with:
+          name: Storage-Spoof-Magisk
+          path: source/storage_spoof.zip
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 30
