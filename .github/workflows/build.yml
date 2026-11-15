@@ -1,57 +1,49 @@
 name: Build Storage Spoof
 
 on:
-  workflow_dispatch:
   push:
     branches:
       - main
     paths:
-      - '**.cpp'
-      - '**.hpp'
-      - '**.mk'
-      - 'build.sh'
-      - 'template/**'
       - 'storage_spoof_src.zip'
       - '.github/workflows/build.yml'
+
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
   build:
-    name: Compile Magisk Module
+    name: Build Magisk Module
     runs-on: ubuntu-24.04
 
     steps:
-      - name: Checkout Repository
+      - name: Checkout Main Branch
         uses: actions/checkout@v4
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
 
-      - name: Install Android NDK
+      - name: Install NDK
         run: |
           sdkmanager --install "ndk;27.2.12479018"
-
           echo "$ANDROID_HOME/ndk/27.2.12479018" >> "$GITHUB_PATH"
 
-      - name: Extract Project
+      - name: Extract Source ZIP
         run: |
-          if [ -f storage_spoof_src.zip ]; then
-            mkdir -p source
-            unzip -q storage_spoof_src.zip -d source
-          else
-            mkdir -p source
-            cp -r build.sh module template source/
-          fi
+          mkdir -p source
+          unzip -q storage_spoof_src.zip -d source
 
-      - name: Fix Source Compatibility
-        working-directory: source
+          echo "Source extracted:"
+          ls -R source
+
+      - name: Fix Compilation Error
         run: |
           python3 - <<'PY'
           from pathlib import Path
 
-          p = Path("module/jni/storage_spoof.cpp")
+          p = Path("source/module/jni/storage_spoof.cpp")
           s = p.read_text()
 
           old = "dl_iterate_phdr(scan_cb, nullptr, nullptr);"
@@ -60,35 +52,26 @@ jobs:
           count = s.count(old)
 
           if count:
-              s = s.replace(old, new)
-              p.write_text(s)
+              p.write_text(s.replace(old, new))
 
-          if old in s:
-              raise SystemExit("dl_iterate_phdr compatibility fix failed")
-
-          print(f"Fixed {count} incompatible calls.")
+          print(f"Fixed {count} dl_iterate_phdr calls.")
           PY
 
-      - name: Build Magisk Module
-        working-directory: source
+      - name: Compile ARM64 and ARM32
         run: |
-          chmod +x build.sh
-          chmod +x template/META-INF/com/google/android/update-binary
-
+          chmod +x source/build.sh
+          cd source
           ./build.sh
 
-      - name: Verify Build
-        working-directory: source
+      - name: Verify Magisk ZIP
         run: |
-          test -f storage_spoof.zip
+          test -f source/storage_spoof.zip
 
-          unzip -l storage_spoof.zip
+          unzip -t source/storage_spoof.zip
 
-          unzip -t storage_spoof.zip
+          unzip -l source/storage_spoof.zip
 
-          echo "Build completed successfully!"
-
-      - name: Upload Magisk ZIP
+      - name: Upload Magisk Module
         uses: actions/upload-artifact@v4
         with:
           name: Storage-Spoof-Magisk
