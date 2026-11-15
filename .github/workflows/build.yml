@@ -19,63 +19,90 @@ jobs:
     runs-on: ubuntu-24.04
 
     steps:
-      - name: Checkout Main Branch
+      - name: Checkout Repository
         uses: actions/checkout@v4
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          accept-android-sdk-licenses: true
+          packages: platform-tools
 
-      - name: Install NDK
+      - name: Install Android NDK
         run: |
+          yes | sdkmanager --licenses
+
           sdkmanager --install "ndk;27.2.12479018"
+
           echo "$ANDROID_HOME/ndk/27.2.12479018" >> "$GITHUB_PATH"
 
       - name: Extract Source ZIP
+        id: extract
         run: |
           mkdir -p source
           unzip -q storage_spoof_src.zip -d source
 
-          echo "Source extracted:"
-          ls -R source
+          PROJECT_DIR="$(dirname "$(find "$GITHUB_WORKSPACE/source" -type f -name build.sh -print -quit)")"
 
-      - name: Fix Compilation Error
+          if [ -z "$PROJECT_DIR" ] || [ ! -f "$PROJECT_DIR/module/jni/storage_spoof.cpp" ]; then
+            echo "::error::Invalid source ZIP structure"
+            exit 1
+          fi
+
+          echo "project_dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
+
+          echo "Project directory: $PROJECT_DIR"
+          find "$PROJECT_DIR" -maxdepth 3 -type f
+
+      - name: Fix Compilation Compatibility
+        env:
+          PROJECT_DIR: ${{ steps.extract.outputs.project_dir }}
         run: |
           python3 - <<'PY'
+          import os
           from pathlib import Path
 
-          p = Path("source/module/jni/storage_spoof.cpp")
-          s = p.read_text()
+          p = Path(os.environ["PROJECT_DIR"]) / "module/jni/storage_spoof.cpp"
+
+          source = p.read_text()
 
           old = "dl_iterate_phdr(scan_cb, nullptr, nullptr);"
           new = "dl_iterate_phdr(scan_cb, nullptr);"
 
-          count = s.count(old)
+          count = source.count(old)
 
           if count:
-              p.write_text(s.replace(old, new))
+              source = source.replace(old, new)
+              p.write_text(source)
 
           print(f"Fixed {count} dl_iterate_phdr calls.")
           PY
 
-      - name: Compile ARM64 and ARM32
+      - name: Compile Zygisk Libraries
+        env:
+          PROJECT_DIR: ${{ steps.extract.outputs.project_dir }}
         run: |
-          chmod +x source/build.sh
-          cd source
+          cd "$PROJECT_DIR"
+
+          chmod +x build.sh
+
           ./build.sh
 
-      - name: Verify Magisk ZIP
+      - name: Verify Magisk Package
+        env:
+          PROJECT_DIR: ${{ steps.extract.outputs.project_dir }}
         run: |
-          test -f source/storage_spoof.zip
+          test -f "$PROJECT_DIR/storage_spoof.zip"
 
-          unzip -t source/storage_spoof.zip
+          unzip -t "$PROJECT_DIR/storage_spoof.zip"
 
-          unzip -l source/storage_spoof.zip
+          unzip -l "$PROJECT_DIR/storage_spoof.zip"
 
       - name: Upload Magisk Module
         uses: actions/upload-artifact@v4
         with:
           name: Storage-Spoof-Magisk
-          path: source/storage_spoof.zip
+          path: ${{ steps.extract.outputs.project_dir }}/storage_spoof.zip
           if-no-files-found: error
           compression-level: 0
           retention-days: 30
